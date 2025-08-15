@@ -1,0 +1,296 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <title>NYC LL97 Building Fines</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <script src="https://api.mapbox.com/mapbox-gl-js/v3.0.1/mapbox-gl.js"></script>
+  <link href="https://api.mapbox.com/mapbox-gl-js/v3.0.1/mapbox-gl.css" rel="stylesheet"/>
+  <style>
+    body { margin:0; padding:0; font-family: Arial, sans-serif; background: #0a0a0a; }
+    #map { position:absolute; top:0; bottom:0; width:100%; }
+    #loading { position: fixed; top: 0; left: 0; right: 0; bottom: 0; background: rgba(0,0,0,0.9); display: flex; align-items: center; justify-content: center; z-index: 10000; color: #00ffff; font-size: 18px; }
+    .loading-spinner { width: 50px; height: 50px; border: 3px solid rgba(0,255,255,0.3); border-top: 3px solid #00ffff; border-radius: 50%; animation: spin 1s linear infinite; margin: 0 auto 20px auto; }
+    @keyframes spin { 0% { transform: rotate(0deg); } 100% { transform: rotate(360deg); } }
+    #controls { position: absolute; top: 20px; left: 20px; z-index: 1; width: 350px; background: rgba(0,0,0,0.8); color: white; padding: 20px; border-radius: 10px; }
+    .period-button { display: block; width: 100%; padding: 10px; margin: 5px 0; background: rgba(0,255,255,0.2); color: white; border: 1px solid #00ffff; border-radius: 5px; cursor: pointer; }
+    .period-button.active { background: rgba(0,255,255,0.5); }
+    #stats { margin-top: 20px; }
+    .stat-item { margin: 10px 0; }
+    #legend { position: absolute; right: 20px; bottom: 20px; z-index: 1; background: rgba(0,0,0,0.8); color: white; padding: 15px; border-radius: 10px; }
+    .legend-item { margin: 5px 0; display: flex; align-items: center; }
+    .legend-color { width: 20px; height: 20px; margin-right: 10px; border-radius: 50%; }
+  </style>
+</head>
+<body>
+
+<div id="loading">
+  <div>
+    <div class="loading-spinner"></div>
+    <div id="loading-text">Loading CSV data...</div>
+  </div>
+</div>
+
+<div id="map"></div>
+
+<div id="controls">
+  <h2 style="color: #00ffff; margin-top: 0;">NYC LL97 Fines</h2>
+  
+  <div>
+    <button class="period-button active" data-period="Fine_2024-2029">2024–2029 Fines</button>
+    <button class="period-button" data-period="Fine_2030-2034">2030–2034 Fines</button>
+    <button class="period-button" data-period="Fine_2035-2039">2035–2039 Fines</button>
+  </div>
+
+  <div id="stats">
+    <div class="stat-item">Buildings: <span id="building-count">0</span></div>
+    <div class="stat-item">Total Fines: <span id="total-fines">$0</span></div>
+    <div class="stat-item">Max Fine: <span id="max-fine">$0</span></div>
+    <div class="stat-item">Major Violators: <span id="major-violators">0</span></div>
+  </div>
+</div>
+
+<div id="legend">
+  <h3 style="color: #00ffff; margin-top: 0;">Fine Amount</h3>
+  <div class="legend-item">
+    <div class="legend-color" style="background:#00ff00;"></div>
+    <span>$0 (Compliant)</span>
+  </div>
+  <div class="legend-item">
+    <div class="legend-color" style="background:#88ff00;"></div>
+    <span>$1 – $9,999</span>
+  </div>
+  <div class="legend-item">
+    <div class="legend-color" style="background:#ffff00;"></div>
+    <span>$10k – $49,999</span>
+  </div>
+  <div class="legend-item">
+    <div class="legend-color" style="background:#ff8800;"></div>
+    <span>$50k – $99,999</span>
+  </div>
+  <div class="legend-item">
+    <div class="legend-color" style="background:#ff0000;"></div>
+    <span>$100k – $499k</span>
+  </div>
+  <div class="legend-item">
+    <div class="legend-color" style="background:#ff0066;"></div>
+    <span>$500k+</span>
+  </div>
+</div>
+
+<script>
+mapboxgl.accessToken = 'pk.eyJ1Ijoic3RlcGhhbmJrIiwiYSI6ImNtZWJtM2VxMTBmZzYyanB6OW9rZmthdWgifQ.WBh_afE2E_ymT0CW48cjMA';
+
+let buildingsData = [];
+let currentPeriod = 'Fine_2024-2029';
+
+const map = new mapboxgl.Map({
+  container: 'map',
+  style: 'mapbox://styles/mapbox/dark-v11',
+  center: [-73.9808, 40.7579],
+  zoom: 11
+});
+
+function getFineColor(fine) {
+  if (fine === 0) return '#00ff00';
+  if (fine < 10000) return '#88ff00';
+  if (fine < 50000) return '#ffff00';
+  if (fine < 100000) return '#ff8800';
+  if (fine < 500000) return '#ff0000';
+  return '#ff0066';
+}
+
+function parseCSV(text) {
+  const lines = text.split('\n');
+  const headers = lines[0].split(',').map(h => h.trim().replace(/"/g, ''));
+  const data = [];
+  
+  for (let i = 1; i < lines.length; i++) {
+    const line = lines[i].trim();
+    if (!line) continue;
+    
+    const values = [];
+    let current = '';
+    let inQuotes = false;
+    
+    for (let j = 0; j < line.length; j++) {
+      const char = line[j];
+      if (char === '"') {
+        inQuotes = !inQuotes;
+      } else if (char === ',' && !inQuotes) {
+        values.push(current.trim());
+        current = '';
+      } else {
+        current += char;
+      }
+    }
+    values.push(current.trim());
+    
+    if (values.length === headers.length) {
+      const row = {};
+      headers.forEach((header, index) => {
+        row[header] = values[index];
+      });
+      
+      const lat = parseFloat(row['Latitude']);
+      const lng = parseFloat(row['Longitude']);
+      if (!isNaN(lat) && !isNaN(lng)) {
+        data.push(row);
+      }
+    }
+  }
+  
+  return data;
+}
+
+function createGeoJSON() {
+  return {
+    type: 'FeatureCollection',
+    features: buildingsData.map(building => {
+      const fine = parseFloat(building[currentPeriod]) || 0;
+      return {
+        type: 'Feature',
+        properties: {
+          fine: fine,
+          color: getFineColor(fine),
+          name: building['Property Name'] || building['Address 1'] || '',
+          addr: building['Address 1'] || ''
+        },
+        geometry: {
+          type: 'Point',
+          coordinates: [parseFloat(building['Longitude']), parseFloat(building['Latitude'])]
+        }
+      };
+    })
+  };
+}
+
+function updateStats() {
+  const count = buildingsData.length;
+  let total = 0;
+  let max = 0;
+  let majorViolators = 0;
+  
+  buildingsData.forEach(b => {
+    const fine = parseFloat(b[currentPeriod]) || 0;
+    total += fine;
+    if (fine > max) max = fine;
+    if (fine >= 500000) majorViolators++;
+  });
+  
+  document.getElementById('building-count').textContent = count.toLocaleString();
+  document.getElementById('total-fines').textContent = '$' + Math.round(total).toLocaleString();
+  document.getElementById('max-fine').textContent = '$' + Math.round(max).toLocaleString();
+  document.getElementById('major-violators').textContent = majorViolators.toLocaleString();
+}
+
+async function loadData() {
+  try {
+    document.getElementById('loading-text').textContent = 'Loading CSV file...';
+    
+    const response = await fetch('LL97_cleaned_reduced_columns.csv');
+    if (!response.ok) {
+      throw new Error('Failed to load CSV file');
+    }
+    
+    document.getElementById('loading-text').textContent = 'Parsing data...';
+    const csvText = await response.text();
+    buildingsData = parseCSV(csvText);
+    
+    console.log('Loaded', buildingsData.length, 'buildings');
+    
+    document.getElementById('loading-text').textContent = 'Setting up map...';
+    
+    map.addSource('buildings', {
+      type: 'geojson',
+      data: createGeoJSON(),
+      cluster: true,
+      clusterMaxZoom: 14,
+      clusterRadius: 50
+    });
+
+    map.addLayer({
+      id: 'clusters',
+      type: 'circle',
+      source: 'buildings',
+      filter: ['has', 'point_count'],
+      paint: {
+        'circle-color': '#51bbd6',
+        'circle-radius': 20,
+        'circle-opacity': 0.8
+      }
+    });
+
+    map.addLayer({
+      id: 'cluster-count',
+      type: 'symbol',
+      source: 'buildings',
+      filter: ['has', 'point_count'],
+      layout: {
+        'text-field': '{point_count_abbreviated}',
+        'text-size': 12
+      },
+      paint: {
+        'text-color': '#ffffff'
+      }
+    });
+
+    map.addLayer({
+      id: 'building-points',
+      type: 'circle',
+      source: 'buildings',
+      filter: ['!', ['has', 'point_count']],
+      paint: {
+        'circle-color': ['get', 'color'],
+        'circle-radius': 6,
+        'circle-opacity': 0.8
+      }
+    });
+
+    updateStats();
+    
+    setTimeout(() => {
+      document.getElementById('loading').style.display = 'none';
+    }, 1000);
+    
+  } catch (error) {
+    console.error('Error:', error);
+    document.getElementById('loading-text').textContent = 'Error: ' + error.message;
+  }
+}
+
+function updateDisplay() {
+  if (map.getSource('buildings')) {
+    map.getSource('buildings').setData(createGeoJSON());
+    updateStats();
+  }
+}
+
+document.querySelectorAll('.period-button').forEach(btn => {
+  btn.addEventListener('click', (e) => {
+    document.querySelectorAll('.period-button').forEach(b => b.classList.remove('active'));
+    e.target.classList.add('active');
+    currentPeriod = e.target.dataset.period;
+    updateDisplay();
+  });
+});
+
+map.on('load', () => {
+  loadData();
+});
+
+map.on('click', 'clusters', (e) => {
+  const features = map.queryRenderedFeatures(e.point, { layers: ['clusters'] });
+  const clusterId = features[0].properties.cluster_id;
+  map.getSource('buildings').getClusterExpansionZoom(clusterId, (err, zoom) => {
+    if (err) return;
+    map.easeTo({
+      center: features[0].geometry.coordinates,
+      zoom: zoom
+    });
+  });
+});
+
+</script>
+</body>
+</html>
